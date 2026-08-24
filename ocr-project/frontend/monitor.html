@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>수신 모니터</title>
+<style>
+  body{margin:0;background:#0d1117;color:#e6edf3;font:14px ui-monospace,Menlo,monospace}
+  header{padding:12px 16px;border-bottom:1px solid #30363d;display:flex;gap:10px;align-items:center}
+  #dot{width:10px;height:10px;border-radius:50%;background:#f85149}
+  #dot.on{background:#3fb950}
+  #wrap{display:grid;grid-template-columns:1fr 320px;gap:16px;padding:16px;align-items:start}
+  #live,#proc{width:100%;background:#000;border:1px solid #30363d;border-radius:6px;display:block}
+  #pair{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  #pair figure{margin:0}
+  #pair figcaption{color:#8b949e;font-size:11px;text-transform:uppercase;
+                   letter-spacing:.06em;margin-bottom:5px}
+  #verdict{margin-top:10px;padding:9px 12px;border-radius:6px;font-size:12px;
+           background:#161b22;border:1px solid #30363d}
+  #verdict.ok{border-color:#3fb950;color:#3fb950}
+  #verdict.drop{border-color:#d29922;color:#d29922}
+  #grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:12px}
+  #grid img{width:100%;border:1px solid #30363d;border-radius:3px;display:block}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:14px;margin-bottom:10px}
+  .card b{display:block;font-size:26px;color:#3fb950;font-weight:600;line-height:1.3}
+  .card span{color:#8b949e;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  #log{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:10px;
+       height:200px;overflow:auto;font-size:12px;color:#8b949e;line-height:1.7}
+  @media(max-width:820px){#wrap{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<header>
+  <span id="dot"></span>
+  <strong>수신 모니터</strong>
+  <span style="color:#8b949e">폰에서 촬영을 시작하면 여기에 표시됩니다</span>
+</header>
+
+<div id="wrap">
+  <div>
+    <div class="card" style="margin-bottom:16px">
+      <span style="display:block;margin-bottom:8px">폰 접속 주소 (ngrok에서 복사해 붙여넣기)</span>
+      <input id="url" placeholder="https://xxxx.ngrok-free.app"
+             style="width:100%;font:inherit;background:#0d1117;color:#e6edf3;
+                    border:1px solid #30363d;border-radius:4px;padding:9px">
+      <div id="qr" style="margin-top:12px;text-align:center"></div>
+    </div>
+    <div id="pair">
+      <figure><figcaption>원본</figcaption><img id="live" alt="수신 대기 중"></figure>
+      <figure><figcaption>전처리 (OCR 입력)</figcaption><img id="proc" alt="대기 중"></figure>
+    </div>
+    <div id="verdict">전처리 대기 중…</div>
+    <div id="grid"></div>
+  </div>
+  <div>
+    <div class="card"><b id="mFrames">0</b><span>수신 프레임</span></div>
+    <div class="card"><b id="mKept">0</b><span>전처리 통과</span></div>
+    <div class="card"><b id="mProcMs">0.0</b><span>전처리 ms (최근 20 평균)</span></div>
+    <div class="card"><b id="mFps">0.0</b><span>초당 수신</span></div>
+    <div class="card"><b id="mSize">0</b><span>KB / 프레임</span></div>
+    <div class="card"><b id="mTotal">0</b><span>누적 MB</span></div>
+    <div id="log">연결 대기 중…</div>
+  </div>
+</div>
+
+<script>
+// 서버가 /monitor 응답에서 치환해 넣는다 (파일을 직접 열면 치환되지 않음)
+const TOKEN = "__SESSION_TOKEN__";
+
+const live = document.getElementById('live');
+const proc = document.getElementById('proc');
+const grid = document.getElementById('grid');
+const dot  = document.getElementById('dot');
+const verdict = document.getElementById('verdict');
+let meta = null;
+
+function log(t) {
+  const d = document.createElement('div');
+  d.textContent = new Date().toLocaleTimeString('ko-KR') + '  ' + t;
+  document.getElementById('log').prepend(d);
+}
+
+function connect() {
+  const ws = new WebSocket(
+    (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host
+    + '/ws/watch?t=' + encodeURIComponent(TOKEN));
+  ws.binaryType = 'blob';
+
+  ws.onopen = () => { dot.classList.add('on'); log('서버 연결됨'); };
+
+  // 메타(text) → 원본(binary) → [전처리본(binary)] 순서로 온다.
+  // 전처리본은 has_proc 일 때만 붙으므로 몇 번째 바이너리인지 세야 한다.
+  let binIndex = 0;
+
+  ws.onmessage = e => {
+    if (typeof e.data === 'string') {
+      meta = JSON.parse(e.data);
+      binIndex = 0;
+      return;
+    }
+    if (!meta) return;
+
+    if (binIndex === 0) {
+      showOriginal(e.data);
+      binIndex = 1;
+      if (!meta.has_proc) meta = null;      // 전처리본이 안 오므로 여기서 끝
+    } else {
+      URL.revokeObjectURL(proc.src);
+      proc.src = URL.createObjectURL(e.data);
+      meta = null;
+    }
+  };
+
+  function showOriginal(blob) {
+    URL.revokeObjectURL(live.src);          // 이전 주소 해제 (메모리 누수 방지)
+    live.src = URL.createObjectURL(blob);
+
+    document.getElementById('mFrames').textContent = meta.frames;
+    document.getElementById('mKept').textContent   = meta.kept;
+    document.getElementById('mProcMs').textContent = meta.proc_ms_avg;
+    document.getElementById('mFps').textContent    = meta.fps;
+    document.getElementById('mSize').textContent   = Math.round(meta.size / 1024);
+    document.getElementById('mTotal').textContent  = meta.total_mb;
+
+    const d = meta.dropped || {};
+    verdict.className = meta.ok ? 'ok' : 'drop';
+    verdict.textContent =
+      (meta.ok ? 'OK' : 'DROP: ' + meta.reason)
+      + `   sharpness ${meta.sharpness}   diff ${meta.diff}`
+      + `   skew ${meta.angle}°   ${meta.proc_ms}ms`
+      + `   |  폐기  static ${d.static||0} / blurry ${d.blurry||0}`;
+
+    if (meta.frames % 10 === 1) {           // 10장마다 한 장씩 남겨둠
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(blob);
+      grid.prepend(img);
+      while (grid.children.length > 9) {
+        URL.revokeObjectURL(grid.lastChild.src);
+        grid.lastChild.remove();
+      }
+      log(`#${meta.seq}  ${(meta.size/1024).toFixed(0)}KB  ${meta.w}x${meta.h}`
+          + `  ${meta.ok ? 'OK' : meta.reason}`);
+    }
+  }
+
+  ws.onclose = () => { dot.classList.remove('on'); log('연결 끊김 — 2초 후 재시도'); setTimeout(connect, 2000); };
+}
+// ngrok 주소를 QR로 — 서버가 PNG를 만들어 준다 (외부 CDN 불필요)
+const urlBox = document.getElementById('url');
+const qrBox  = document.getElementById('qr');
+
+function drawQR() {
+  const raw = urlBox.value.trim();
+  qrBox.innerHTML = '';
+  if (!raw.startsWith('http')) return;
+  localStorage.setItem('ngrokUrl', raw);
+
+  // 세션 토큰을 링크에 실어 폰에 전달한다 — 폰은 QR만 스캔하면 된다
+  let u;
+  try {
+    const url = new URL(raw);
+    url.searchParams.set('t', TOKEN);
+    u = url.toString();
+  } catch { return; }
+
+  const img = document.createElement('img');
+  img.src = '/qr?u=' + encodeURIComponent(u);
+  img.style.cssText = 'width:200px;height:200px;background:#fff;padding:8px;border-radius:6px';
+  img.onerror = () => {
+    qrBox.innerHTML = '<div style="color:#d29922;font-size:12px">'
+      + 'QR 생성 실패 — 서버에서 <code>pip install "qrcode[pil]"</code> 실행 후 재시작하세요.</div>';
+  };
+  qrBox.appendChild(img);
+
+  const a = document.createElement('a');
+  a.href = u; a.target = '_blank'; a.textContent = u;
+  a.style.cssText = 'display:block;margin-top:8px;font-size:11px;color:#58a6ff;word-break:break-all';
+  qrBox.appendChild(a);
+}
+urlBox.value = localStorage.getItem('ngrokUrl') || '';
+urlBox.oninput = drawQR;
+drawQR();
+
+connect();
+</script>
+</body>
+</html>

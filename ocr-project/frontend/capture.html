@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>촬영</title>
+<style>
+  body{margin:0;background:#111;color:#eee;font:15px ui-monospace,Menlo,monospace}
+  video{width:100%;display:block;background:#000}
+  .bar{padding:12px;display:flex;gap:8px;align-items:center}
+  button{flex:1;font:inherit;background:#238636;color:#fff;border:0;border-radius:6px;padding:14px}
+  button.off{background:#30363d}
+  button:disabled{opacity:.4}
+  #dot{width:10px;height:10px;border-radius:50%;background:#f85149;flex:none}
+  #dot.on{background:#3fb950}
+  #stat{padding:0 12px 16px;color:#8b949e;white-space:pre-wrap;line-height:1.8}
+  b{color:#3fb950;font-weight:600}
+  .err{color:#f85149}
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <span id="dot"></span>
+  <button id="go">촬영 시작</button>
+  <button id="end" class="off" disabled>중지</button>
+</div>
+
+<video id="v" autoplay muted playsinline></video>
+<div id="stat">대기 중</div>
+
+<script>
+const W = 1280, H = 720, FPS = 10, Q = 0.7;
+const v = document.getElementById('v');
+const stat = document.getElementById('stat');
+const dot = document.getElementById('dot');
+
+const cv = document.createElement('canvas');
+cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
+
+let stream, ws, timer, busy = false;
+let seq = 0, sent = 0, dropped = 0, kb = 0, t0 = 0;
+const pending = new Map();
+const lat = [];
+
+// 세션 토큰 — 모니터 페이지의 QR/링크에 ?t= 로 실려 온다
+const TOKEN = new URLSearchParams(location.search).get('t') || '';
+
+// http → ws, https → wss 자동 선택 (ngrok에서 그대로 동작)
+const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://')
+             + location.host + '/ws/send?t=' + encodeURIComponent(TOKEN);
+
+async function go() {
+  document.getElementById('go').disabled = true;
+  stat.textContent = '카메라 권한 요청 중…';
+
+  // ① 권한 — 반드시 클릭 핸들러 안에서 호출 (iOS 요구사항)
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' },
+               width: { ideal: W }, height: { ideal: H } },
+      audio: false
+    });
+  } catch (e) {
+    const m = {
+      NotAllowedError : '권한이 거부됐습니다. 주소창 자물쇠 → 카메라 허용 후 새로고침하세요.',
+      NotFoundError   : '카메라를 찾을 수 없습니다.',
+      NotReadableError: '다른 앱이 카메라를 사용 중입니다.'
+    }[e.name] || ('오류: ' + e.name);
+    stat.innerHTML = '<span class="err">' + m + '</span>';
+    document.getElementById('go').disabled = false;
+    return;
+  }
+
+  v.srcObject = stream;
+  await v.play();
+  const s = stream.getVideoTracks()[0].getSettings();
+
+  // ② 소켓 연결
+  stat.textContent = '서버 연결 중…';
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = () => {
+    dot.classList.add('on');
+    seq = sent = dropped = kb = 0; lat.length = 0;
+    t0 = performance.now();
+    timer = setInterval(tick, 1000 / FPS);
+    document.getElementById('end').disabled = false;
+    stat.textContent = `전송 중  ${s.width}×${s.height}  facing=${s.facingMode || '미지원'}`;
+  };
+  ws.onmessage = e => {
+    const r = JSON.parse(e.data);
+    if (r.type && r.type !== 'ack') return;  // OCR/가이드 메시지는 다음 프론트 작업에서 표시
+    const t = pending.get(r.seq);
+    if (t !== undefined) { lat.push(performance.now() - t); pending.delete(r.seq); }
+    if (lat.length > 100) lat.shift();
+  };
+  ws.onerror = () => stat.innerHTML = '<span class="err">소켓 오류 발생</span>';
+  ws.onclose = (e) => {
+    dot.classList.remove('on');
+    const reason = {
+      1000: '정상 종료',
+      1006: '비정상 종료 — 서버에 닿지 못했거나 인증서가 거부됨',
+      1008: '토큰이 없거나 만료됨 — 모니터 화면의 QR을 다시 스캔하세요',
+      1009: '프레임이 너무 큼 (2MB 초과)',
+      1011: '서버 내부 오류'
+    }[e.code] || '';
+    stat.innerHTML = `<span class="err">연결 끊김  code=${e.code}  ${reason}\n${e.reason || ''}</span>`;
+    clearInterval(timer);
+    stream?.getTracks().forEach(t => t.stop());
+    document.getElementById('go').disabled = false;
+    document.getElementById('end').disabled = true;
+  };
+}
+
+function tick() {
+  if (!ws || ws.readyState !== 1) return;
+  if (busy) { dropped++; return; }                        // 인코딩 백프레셔
+  if (ws.bufferedAmount > 500000) { dropped++; return; }  // 전송 백프레셔
+
+  busy = true;
+  ctx.drawImage(v, 0, 0, W, H);
+
+  cv.toBlob(async b => {
+    if (!b || !ws || ws.readyState !== 1) { busy = false; return; }
+    const id = ++seq;
+    pending.set(id, performance.now());
+    ws.send(JSON.stringify({ seq: id, w: W, h: H }));   // ③ 헤더
+    ws.send(await b.arrayBuffer());                     // ④ 프레임
+    sent++; kb += b.size / 1024;
+    render();
+    busy = false;
+  }, 'image/jpeg', Q);
+}
+
+function p(arr, q) {
+  if (!arr.length) return '–';
+  const s = [...arr].sort((a, b) => a - b);
+  return (s[Math.floor(s.length * q)] / 1000).toFixed(2) + 's';
+}
+
+function render() {
+  const sec = (performance.now() - t0) / 1000;
+  const total = sent + dropped;
+  stat.innerHTML =
+    `전송 <b>${sent}</b>장   <b>${(sent / sec).toFixed(1)}</b> fps\n` +
+    `평균 <b>${(kb / sent).toFixed(0)}</b> KB/장   누적 ${(kb / 1024).toFixed(1)} MB\n` +
+    `왕복 p50 <b>${p(lat, .5)}</b>   p95 <b>${p(lat, .95)}</b>   드롭 ${total ? Math.round(dropped / total * 100) : 0}%`;
+}
+
+function end() {
+  clearInterval(timer);
+  if (ws) { ws.onclose = null; ws.close(); ws = null; }
+  stream?.getTracks().forEach(t => t.stop());   // 카메라 표시등 소등
+  dot.classList.remove('on');
+  document.getElementById('go').disabled = false;
+  document.getElementById('end').disabled = true;
+}
+
+document.getElementById('go').onclick = go;
+document.getElementById('end').onclick = end;
+addEventListener('pagehide', end);
+
+if (!isSecureContext)
+  stat.innerHTML = '<span class="err">HTTPS가 아닙니다. ngrok 주소로 접속하세요.</span>';
+else if (!TOKEN) {
+  stat.innerHTML = '<span class="err">세션 토큰이 없습니다. PC 모니터 화면의 QR을 스캔해 접속하세요.</span>';
+  document.getElementById('go').disabled = true;
+}
+</script>
+</body>
+</html>

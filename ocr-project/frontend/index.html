@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>StreamOCR Demo</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">StreamOCR</p>
+          <h1>모바일 카메라 OCR</h1>
+        </div>
+        <button id="start-btn" class="primary-btn">카메라 시작</button>
+      </header>
+
+      <section class="camera-panel">
+        <video id="camera" autoplay playsinline muted></video>
+        <div id="overlay" class="overlay">대기 중</div>
+      </section>
+
+      <section class="status-panel">
+        <div>
+          <span class="label">연결 상태</span>
+          <strong id="status">대기 중</strong>
+        </div>
+        <div>
+          <span class="label">실시간 인식</span>
+          <strong id="result">아직 인식된 텍스트가 없습니다.</strong>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button id="stop-btn" class="secondary-btn">중지</button>
+      </div>
+    </main>
+
+    <canvas id="capture-canvas" width="1280" height="720" hidden></canvas>
+
+    <script src="app.js"></script>
+  </body>
+</html>
