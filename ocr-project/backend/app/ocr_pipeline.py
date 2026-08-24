@@ -99,7 +99,17 @@ class OpenCVPreprocessor:
             new_height = max(1, int(image.shape[0] * scale))
             image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
 
+        height, width = image.shape[:2]
+        crop_margin_x = int(width * 0.10)
+        crop_margin_y = int(height * 0.15)
+        x_start = max(0, crop_margin_x)
+        y_start = max(0, crop_margin_y)
+        x_end = max(x_start + 1, width - crop_margin_x)
+        y_end = max(y_start + 1, height - crop_margin_y)
+        image = image[y_start:y_end, x_start:x_end]
+
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         gray = clahe.apply(gray)
 

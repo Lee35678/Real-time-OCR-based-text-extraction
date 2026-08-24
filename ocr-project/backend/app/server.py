@@ -14,18 +14,18 @@ from .ocr_pipeline import OCRPipeline
 
 
 CONFIG = OCRConfig(
-    frame_queue_size=6,
-    target_fps=3,
+    frame_queue_size=5,
+    target_fps=2,
     worker_count=2,
-    confidence_threshold=60.0,
-    min_laplacian_variance=120.0,
-    preprocess_width=1280,
-    preprocess_height=720,
-    jpeg_quality=70,
+    confidence_threshold=35.0,
+    min_laplacian_variance=60.0,
+    preprocess_width=1440,
+    preprocess_height=900,
+    jpeg_quality=85,
     max_duplicate_window=5,
-    # Temporary testing mode: keep the dictionary gate disabled so raw OCR text can be
-    # inspected during browser/mobile validation. In production this should be replaced
-    # by a real English word corpus or a configurable dictionary to suppress noise.
+    tesseract_config="--oem 1 --psm 11 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,:;!?()/%#@+-=<>",
+    # Dictionary filtering remains configurable. For live mobile testing we keep it off
+    # until the OCR output is stable, then a real English corpus can be layered in.
     valid_word_set=set(),
 )
 

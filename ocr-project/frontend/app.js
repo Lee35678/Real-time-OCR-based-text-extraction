@@ -9,12 +9,42 @@ const ctx = canvas.getContext('2d');
 
 const backendScheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
 const backendUrl = `${backendScheme}://${window.location.host}/ws/stream`;
+const CAPTURE_INTERVAL_MS = 600;
+const IMAGE_QUALITY = 0.85;
 
 let stream = null;
 let socket = null;
 let sessionId = `browser-${Date.now()}`;
 let frameId = 0;
 let captureTimer = null;
+
+function captureCropFrame(videoElement) {
+  const width = videoElement.videoWidth || 1280;
+  const height = videoElement.videoHeight || 720;
+
+  const cropX = Math.max(0, width * 0.10);
+  const cropY = Math.max(0, height * 0.15);
+  const cropWidth = Math.max(200, width * 0.80);
+  const cropHeight = Math.max(200, height * 0.70);
+
+  canvas.width = Math.max(640, Math.round(cropWidth));
+  canvas.height = Math.max(480, Math.round(cropHeight));
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(
+    videoElement,
+    cropX,
+    cropY,
+    cropWidth,
+    cropHeight,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  return canvas.toDataURL('image/jpeg', IMAGE_QUALITY);
+}
 
 function setStatus(message, tone = 'normal') {
   statusEl.textContent = message;
@@ -106,8 +136,7 @@ async function startCamera() {
         return;
       }
 
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.7);
+      const imageDataUrl = captureCropFrame(video);
 
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(
@@ -122,7 +151,7 @@ async function startCamera() {
       }
 
       frameId += 1;
-    }, 300);
+    }, CAPTURE_INTERVAL_MS);
 
     setStatus('카메라 실행 중', 'success');
     updateOverlay('카메라가 실행 중입니다.');
