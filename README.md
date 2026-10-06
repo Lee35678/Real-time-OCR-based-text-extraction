@@ -1,3 +1,64 @@
+# Real-time-OCR-based-text-extraction (StreamOCR)
+
+브라우저 카메라 프레임을 WebSocket으로 FastAPI 서버에 보내 OpenCV 전처리 + Tesseract로 영문 텍스트를 실시간 추출하는 프로젝트.
+아래 문서 대부분은 기획 단계의 PRD(목표 사양)이며, 이 절은 현재 코드 기준의 구현 현황과 실행 방법이다.
+
+## 구현 현황 (코드 기준)
+
+- **백엔드** (`ocr-project/backend/app/`) — FastAPI. `GET /health`, `GET /api/info`, `POST /api/session/start`, `WS /ws/stream`.
+  base64 프레임 수신 → latest-first 큐 → OpenCV 전처리·선명도(Laplacian) 판별 → `ProcessPoolExecutor` Tesseract 워커 → confidence 필터·프레임 간 중복 제거 → 결과 JSON push.
+  실제 기본값(큐 크기, 워커 수, confidence 임계값, Tesseract 옵션 등)은 `backend/app/config.py`에 있으며 PRD의 수치와 다르다.
+- **프론트엔드** (`ocr-project/frontend/`) — nginx가 `index.html`/`app.js`/`styles.css`를 서비스하고, `/ws/`·`/api/`·`/health`를 백엔드로 프록시한다.
+- **PRD 중 아직 코드에 없는 것** — 문장 임베딩(Sentence-Transformers), Supabase/pgvector 저장, 유사어 검색, NLTK 사전 필터(백엔드의 `valid_word_set`은 빈 집합으로 시작해 사전 필터가 꺼져 있음), Prometheus/Grafana 계측.
+- `frontend/server.py`는 휴대폰 → PC 수신 확인용 별도 PoC 서버(`/ws/send`, `/ws/watch`, `/monitor`, 세션 단어 목록·CSV API)다. 여기서 쓰는 `ocr_connector.recognize()`는 빈 결과를 돌려주는 연결 지점만 있다(`frontend/BACKEND_OCR_INTEGRATION.md` 참고).
+
+## 실행 방법
+
+자세한 단계는 [`ocr-project/LOCAL_RUN_GUIDE.md`](ocr-project/LOCAL_RUN_GUIDE.md)에 있다.
+
+### Docker Compose (백엔드 + 프론트엔드)
+
+```bash
+cd ocr-project
+docker compose up --build
+```
+
+- 프론트엔드: http://localhost:8080
+- 백엔드 헬스체크: http://localhost:8000/health
+- 휴대폰 카메라는 HTTPS에서만 열리므로 `ngrok http 8080` 등으로 HTTPS 터널을 열어 접속한다.
+
+### 로컬 (Docker 없이)
+
+Tesseract OCR 5.x를 먼저 설치해 PATH에 잡혀 있어야 한다.
+
+```bash
+cd ocr-project/backend
+python -m venv .venv
+# Windows: .\.venv\Scripts\Activate.ps1   /  macOS·Linux: source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.server:app --host 0.0.0.0 --port 8000
+```
+
+테스트는 `ocr-project` 폴더에서 실행한다.
+
+```bash
+cd ocr-project
+python -m pytest -q OCR_tests/test_ocr_pipeline.py
+```
+
+### 폴더 구조
+
+```
+ocr-project/
+├── backend/            # FastAPI OCR 서버 (app/config.py, app/ocr_pipeline.py, app/server.py), Dockerfile
+├── frontend/           # nginx 정적 프론트 + 별도 PoC 서버(server.py 등), Dockerfile, nginx.conf
+├── OCR_tests/          # 파이프라인 단위 테스트
+├── docker-compose.yml
+└── LOCAL_RUN_GUIDE.md
+```
+
+---
+
 # PRD: 실시간 모바일 웹캠 기반 영문 텍스트 OCR·임베딩 수집 서비스
 
 | 항목 | 내용 |
